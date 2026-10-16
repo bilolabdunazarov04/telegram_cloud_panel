@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+
+.venv/
+__pycache__/
+*.py[cod]
+
+data/
+*.session
+*.session-journal
+*.db
+*.db-journal
+
+.DS_Store
+EOF
