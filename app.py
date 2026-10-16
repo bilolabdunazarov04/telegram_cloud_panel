@@ -1,5 +1,7 @@
 import asyncio
+import html
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -50,7 +52,11 @@ app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 tg_loop = asyncio.new_event_loop()
 tg_ready = threading.Event()
 tg_client: Optional[TelegramClient] = None
-auth_state = {"phone": None, "phone_code_hash": None, "needs_password": False, "connected": False}
+auth_state = {
+    "phone": None, "phone_code_hash": None, "needs_password": False,
+    "connected": False, "code_delivery": "", "last_code_sent_at": 0.0,
+}
+auth_lock = threading.Lock()
 
 def loop_thread():
     asyncio.set_event_loop(tg_loop)
@@ -165,57 +171,104 @@ def excerpt(msg):
 
 
 @app.get("/telegram", response_class=HTMLResponse)
-async def telegram_page(request: Request, message: str = ""):
+async def telegram_page(request: Request, message: str = "", kind: str = "info"):
     guard = page_guard(request)
     if guard:
         return guard
 
+    # Re-check the persisted Telethon session instead of trusting a stale UI flag.
+    try:
+        tg = tg_call(get_client(), timeout=45)
+        auth_state["connected"] = bool(tg_call(tg.is_user_authorized(), timeout=30))
+    except Exception:
+        auth_state["connected"] = False
+
     state = auth_state
-    notice = f'<div class="notice">{message}</div>' if message else ""
-    code_form = ""
-    password_form = ""
+    notice = ""
+    if message:
+        safe_message = html.escape(message[:300])
+        notice = f'<div class="notice telegram-notice {html.escape(kind)}" role="status">{safe_message}</div>'
 
-    if state["phone_code_hash"]:
-        code_form = """
-        <h2>Tasdiqlash kodi</h2>
-        <form method="post" action="/telegram/verify">
-          <label>Telegram yuborgan kod</label>
-          <input name="code" required autocomplete="one-time-code">
-          <button class="btn primary">Kodni tasdiqlash</button>
-        </form>
+    if state["connected"]:
+        step_html = f"""
+          <div class="tg-connected"><span class="tg-check">✓</span><div>
+            <strong>Telegram akkaunti ulangan</strong>
+            <p>Ulanish faol. Klientlarni sinxronlash va boshqa funksiyalardan foydalanishingiz mumkin.</p>
+          </div></div>
+          <div class="tg-actions"><a class="btn primary" href="/recipients">Klientlarga o‘tish</a></div>
         """
-
-    if state["needs_password"]:
-        password_form = """
-        <h2>Ikki bosqichli parol</h2>
-        <form method="post" action="/telegram/password">
-          <label>Telegram 2FA paroli</label>
-          <input type="password" name="password" required>
-          <button class="btn primary">Parolni tasdiqlash</button>
-        </form>
+    elif state["needs_password"]:
+        step_html = """
+          <div class="tg-step"><span class="tg-step-number">3</span><div><h3>Ikki bosqichli parol</h3><p>Telegram akkauntingizda qo‘shimcha himoya yoqilgan.</p></div></div>
+          <form class="tg-form" method="post" action="/telegram/password">
+            <label for="tg-password">Telegram 2FA paroli</label>
+            <input id="tg-password" type="password" name="password" required autocomplete="current-password" placeholder="Ikki bosqichli parol">
+            <button class="btn primary" type="submit">Parolni tasdiqlash</button>
+          </form>
+        """
+    elif state["phone_code_hash"]:
+        delivery = html.escape(state.get("code_delivery") or "Telegram")
+        phone = html.escape(state.get("phone") or "")
+        step_html = f"""
+          <div class="tg-step"><span class="tg-step-number">2</span><div><h3>Tasdiqlash kodi</h3><p><b>{phone}</b> raqamiga yuborish so‘rovi bajarildi. Kod Telegram ko‘rsatgan joyga keladi ({delivery}).</p></div></div>
+          <form class="tg-form" method="post" action="/telegram/verify">
+            <label for="tg-code">Telegram kodi</label>
+            <input id="tg-code" name="code" required inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="Kodni kiriting">
+            <button class="btn primary" type="submit">Kodni tasdiqlash</button>
+          </form>
+          <form class="tg-inline-form" method="post" action="/telegram/send-code">
+            <input type="hidden" name="phone" value="{phone}">
+            <button class="btn" type="submit">Kodni qayta yuborish</button>
+          </form>
+        """
+    else:
+        step_html = """
+          <div class="tg-step"><span class="tg-step-number">1</span><div><h3>Telefon raqamingiz</h3><p>Raqamni xalqaro formatda kiriting. Masalan, +998901234567.</p></div></div>
+          <form class="tg-form" method="post" action="/telegram/send-code">
+            <label for="tg-phone">Telefon raqami</label>
+            <input id="tg-phone" name="phone" type="tel" required autocomplete="tel" inputmode="tel" placeholder="+998901234567" pattern="\\+?[0-9() -]{8,20}">
+            <button class="btn primary" type="submit">Telegram kodini yuborish</button>
+          </form>
         """
 
     content = f"""
-    <section class="panel" style="padding:24px">
-      <h2>Telegram akkauntini ulash</h2>
-      <p>{'Akkaunt ulangan.' if state['connected'] else 'Telefon raqamingizni xalqaro formatda kiriting, masalan +998901234567.'}</p>
+    <section class="panel telegram-panel">
+      <div class="tg-card-heading"><div class="tg-icon">T</div><div><span class="eyebrow">XAVFSIZ ULANISH</span><h2>Telegram akkauntini ulash</h2><p>Akkauntingizni bir marta ulang — sessiya serverda saqlanadi.</p></div></div>
       {notice}
-      <form method="post" action="/telegram/send-code">
-        <label>Telefon raqami</label>
-        <input name="phone" type="tel" required placeholder="+998901234567">
-        <button class="btn primary">Telegram kodini yuborish</button>
-      </form>
-      {code_form}
-      {password_form}
-      <hr>
-      <p>Eski sessiya ishlamayotgan bo‘lsa, avval uni zaxiralab yangilashingiz mumkin.</p>
-      <form method="post" action="/telegram/reset-session"
-            onsubmit="return confirm('Eski Telegram sessiyasini zaxiralab, yangisini boshlaysizmi?')">
-        <button class="btn">Sessiyani yangilash</button>
-      </form>
+      <div class="tg-progress">
+        <span class="{'done' if state['connected'] or state['phone_code_hash'] else 'current'}">Telefon</span>
+        <i></i><span class="{'done' if state['connected'] else ('current' if state['phone_code_hash'] else '')}">Tasdiqlash</span>
+        <i></i><span class="{'done' if state['connected'] else ('current' if state['needs_password'] else '')}">Tayyor</span>
+      </div>
+      {step_html}
+      <div class="tg-help"><strong>Kod kelmadimi?</strong><p>Kod Telegram ilovasidagi xizmat xabarlariga yuborilishi mumkin. Telegram ko‘rsatgan yetkazish usulini tekshiring. Qayta yuborishni ko‘p takrorlamang — vaqtinchalik cheklov qo‘yilishi mumkin.</p></div>
+      <details class="tg-reset"><summary>Sessiya bilan muammo bormi?</summary>
+        <p>Faqat eski sessiya ishlamayotganiga ishonchingiz komil bo‘lsa, yangilang. Bu akkauntni qayta ulashni talab qilishi mumkin.</p>
+        <form method="post" action="/telegram/reset-session" onsubmit="return confirm('Sessiya fayli zaxiralanadi. Telegram akkauntini qayta ulash kerak bo‘lishi mumkin. Davom etasizmi?')">
+          <button class="btn" type="submit">Sessiyani zaxiralab yangilash</button>
+        </form>
+      </details>
     </section>
     """
     return HTMLResponse(html_page("Telegram ulash", content, "telegram"))
+
+
+def telegram_error_message(exc):
+    name = type(exc).__name__
+    if isinstance(exc, FloodWaitError):
+        seconds = max(1, int(getattr(exc, "seconds", 1)))
+        return f"Telegram vaqtinchalik kutishni talab qildi. {seconds} soniyadan keyin qayta urinib ko‘ring."
+    known = {
+        "PhoneNumberInvalidError": "Telefon raqami noto‘g‘ri. +998... formatida tekshiring.",
+        "PhoneNumberBannedError": "Bu telefon raqami Telegram tomonidan cheklangan.",
+        "PhoneCodeInvalidError": "Kod noto‘g‘ri. Telegram yuborgan eng so‘nggi kodni kiriting.",
+        "PhoneCodeExpiredError": "Kod muddati tugagan. Yangi kod so‘rang.",
+        "PhoneCodeEmptyError": "Telegram kodini kiriting.",
+        "PasswordHashInvalidError": "Ikki bosqichli parol noto‘g‘ri.",
+        "SessionPasswordNeededError": "Telegram ikki bosqichli parolni talab qilmoqda.",
+        "AuthRestartError": "Telegram tasdiqlash jarayonini qayta boshlashni so‘radi. Yangi kod yuboring.",
+    }
+    return known.get(name, f"Telegram so‘rovi bajarilmadi ({name}). Birozdan keyin qayta urinib ko‘ring.")
 
 
 @app.post("/telegram/send-code")
@@ -223,23 +276,39 @@ async def telegram_send_code(request: Request, phone: str = Form(...)):
     guard = page_guard(request)
     if guard:
         return guard
-    phone = phone.strip()
+
+    phone = re.sub(r"[\s()\-]", "", phone.strip())
+    if not re.fullmatch(r"\+?[1-9][0-9]{7,14}", phone):
+        return RedirectResponse("/telegram?message=Telefon%20raqamini%20xalqaro%20formatda%20tekshiring&kind=error", status_code=303)
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    if not auth_lock.acquire(blocking=False):
+        return RedirectResponse("/telegram?message=Oldingi%20so‘rov%20bajarilmoqda.%20Biroz%20kuting&kind=error", status_code=303)
     try:
         async def send():
             tg = await get_client()
+            if await tg.is_user_authorized():
+                return None
             return await tg.send_code_request(phone)
-        sent = tg_call(send())
+
+        sent = tg_call(send(), timeout=60)
+        if sent is None:
+            auth_state.update(phone=None, phone_code_hash=None, needs_password=False, connected=True)
+            return RedirectResponse("/telegram?message=Bu%20akkaunt%20allaqachon%20ulangan&kind=success", status_code=303)
+
         auth_state["phone"] = phone
         auth_state["phone_code_hash"] = sent.phone_code_hash
         auth_state["needs_password"] = False
-        return RedirectResponse("/telegram?message=Kod%20yuborildi", status_code=303)
-    except Exception as e:
-        return HTMLResponse(
-            html_page("Telegram ulash",
-                      f'<div class="notice">Kod yuborilmadi: {str(e)}</div><a href="/telegram">Orqaga</a>',
-                      "telegram"),
-            status_code=400
-        )
+        auth_state["code_delivery"] = getattr(sent.type, "__class__", type(sent.type)).__name__
+        # Prefer Telethon's type name because it distinguishes app, SMS, call, etc.
+        auth_state["code_delivery"] = type(sent.type).__name__
+        return RedirectResponse("/telegram?message=Telegram%20kod%20yuborish%20so‘rovini%20qabul%20qildi&kind=success", status_code=303)
+    except Exception as exc:
+        message = telegram_error_message(exc)
+        return RedirectResponse("/telegram?message=" + __import__("urllib.parse", fromlist=["quote"]).quote(message) + "&kind=error", status_code=303)
+    finally:
+        auth_lock.release()
 
 
 @app.post("/telegram/verify")
@@ -248,37 +317,31 @@ async def telegram_verify(request: Request, code: str = Form(...)):
     if guard:
         return guard
     if not auth_state["phone"] or not auth_state["phone_code_hash"]:
-        return RedirectResponse("/telegram", status_code=303)
-
+        return RedirectResponse("/telegram?message=Avval%20telefon%20raqamiga%20kod%20yuboring&kind=error", status_code=303)
+    code = re.sub(r"\s+", "", code)
+    if not code or len(code) > 12:
+        return RedirectResponse("/telegram?message=Kodni%20tekshirib%20qayta%20kiriting&kind=error", status_code=303)
+    if not auth_lock.acquire(blocking=False):
+        return RedirectResponse("/telegram?message=Oldingi%20so‘rov%20bajarilmoqda&kind=error", status_code=303)
     try:
         async def verify():
             tg = await get_client()
-            await tg.sign_in(
-                phone=auth_state["phone"],
-                code=code.strip(),
-                phone_code_hash=auth_state["phone_code_hash"]
-            )
-        tg_call(verify())
-        auth_state.update(phone=None, phone_code_hash=None,
-                          needs_password=False, connected=True)
-        return RedirectResponse("/telegram?message=Akkaunt%20ulandi", status_code=303)
+            await tg.sign_in(phone=auth_state["phone"], code=code,
+                             phone_code_hash=auth_state["phone_code_hash"])
+            return await tg.is_user_authorized()
+        authorized = tg_call(verify(), timeout=60)
+        if authorized:
+            auth_state.update(phone=None, phone_code_hash=None, needs_password=False,
+                              connected=True, code_delivery="")
+            return RedirectResponse("/telegram?message=Telegram%20akkaunti%20muvaffaqiyatli%20ulandi&kind=success", status_code=303)
+        return RedirectResponse("/telegram?message=Telegram%20tasdiqlashi%20yakunlanmadi.%20Yana%20urinib%20ko‘ring&kind=error", status_code=303)
     except SessionPasswordNeededError:
         auth_state["needs_password"] = True
-        return RedirectResponse("/telegram?message=Ikki%20bosqichli%20parol%20kerak", status_code=303)
-    except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
-        return HTMLResponse(
-            html_page("Telegram ulash",
-                      f'<div class="notice">Kod xatosi yoki muddati tugagan: {str(e)}</div><a href="/telegram">Qaytish</a>',
-                      "telegram"),
-            status_code=400
-        )
-    except Exception as e:
-        return HTMLResponse(
-            html_page("Telegram ulash",
-                      f'<div class="notice">Kirishda xato: {str(e)}</div><a href="/telegram">Qaytish</a>',
-                      "telegram"),
-            status_code=400
-        )
+        return RedirectResponse("/telegram?message=Ikki%20bosqichli%20parol%20kerak&kind=info", status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/telegram?message=" + __import__("urllib.parse", fromlist=["quote"]).quote(telegram_error_message(exc)) + "&kind=error", status_code=303)
+    finally:
+        auth_lock.release()
 
 
 @app.post("/telegram/password")
@@ -286,21 +349,25 @@ async def telegram_password(request: Request, password: str = Form(...)):
     guard = page_guard(request)
     if guard:
         return guard
+    if not auth_state["needs_password"]:
+        return RedirectResponse("/telegram?message=Avval%20kodni%20tasdiqlang&kind=error", status_code=303)
+    if not auth_lock.acquire(blocking=False):
+        return RedirectResponse("/telegram?message=Oldingi%20so‘rov%20bajarilmoqda&kind=error", status_code=303)
     try:
         async def verify_password():
             tg = await get_client()
             await tg.sign_in(password=password)
-        tg_call(verify_password())
-        auth_state.update(phone=None, phone_code_hash=None,
-                          needs_password=False, connected=True)
-        return RedirectResponse("/telegram?message=Akkaunt%20ulandi", status_code=303)
-    except Exception as e:
-        return HTMLResponse(
-            html_page("Telegram ulash",
-                      f'<div class="notice">Parol bilan kirishda xato: {str(e)}</div><a href="/telegram">Qaytish</a>',
-                      "telegram"),
-            status_code=400
-        )
+            return await tg.is_user_authorized()
+        authorized = tg_call(verify_password(), timeout=60)
+        if not authorized:
+            return RedirectResponse("/telegram?message=Akkaunt%20hali%20tasdiqlanmadi&kind=error", status_code=303)
+        auth_state.update(phone=None, phone_code_hash=None, needs_password=False,
+                          connected=True, code_delivery="")
+        return RedirectResponse("/telegram?message=Telegram%20akkaunti%20muvaffaqiyatli%20ulandi&kind=success", status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/telegram?message=" + __import__("urllib.parse", fromlist=["quote"]).quote(telegram_error_message(exc)) + "&kind=error", status_code=303)
+    finally:
+        auth_lock.release()
 
 
 @app.post("/telegram/reset-session")
@@ -309,28 +376,24 @@ async def telegram_reset_session(request: Request):
     guard = page_guard(request)
     if guard:
         return guard
+    if not auth_lock.acquire(blocking=False):
+        return RedirectResponse("/telegram?message=Oldingi%20so‘rov%20bajarilmoqda&kind=error", status_code=303)
     try:
         if tg_client is not None and tg_client.is_connected():
-            await tg_call(tg_client.disconnect())
+            await tg_call(tg_client.disconnect(), timeout=30)
         tg_client = None
         session_file = Path(str(SESSION_PATH) + ".session")
         if session_file.exists():
-            backup = Path(str(session_file) + ".bak")
-            if backup.exists():
-                from datetime import datetime
-                backup = Path(str(session_file) + "." + datetime.now().strftime("%Y%m%d%H%M%S") + ".bak")
+            from datetime import datetime
+            backup = Path(str(session_file) + "." + datetime.now().strftime("%Y%m%d%H%M%S") + ".bak")
             session_file.rename(backup)
-        auth_state.update(phone=None, phone_code_hash=None,
-                          needs_password=False, connected=False)
-        return RedirectResponse("/telegram?message=Eski%20sessiya%20zaxiralandi", status_code=303)
-    except Exception as e:
-        return HTMLResponse(
-            html_page("Telegram ulash",
-                      f'<div class="notice">Sessiyani yangilashda xato: {str(e)}</div><a href="/telegram">Qaytish</a>',
-                      "telegram"),
-            status_code=400
-        )
-
+        auth_state.update(phone=None, phone_code_hash=None, needs_password=False,
+                          connected=False, code_delivery="")
+        return RedirectResponse("/telegram?message=Eski%20sessiya%20zaxiralandi.%20Endi%20qayta%20ulashingiz%20mumkin&kind=success", status_code=303)
+    except Exception as exc:
+        return RedirectResponse("/telegram?message=" + __import__("urllib.parse", fromlist=["quote"]).quote(telegram_error_message(exc)) + "&kind=error", status_code=303)
+    finally:
+        auth_lock.release()
 
 
 @app.get("/login", response_class=HTMLResponse)
