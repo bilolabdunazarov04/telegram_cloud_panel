@@ -133,7 +133,7 @@ def html_page(title, content, active="dashboard"):
 <div class="brand"><div class="brand-mark">T</div><div><b>Client Desk</b><small>TELEGRAM WORKSPACE</small></div></div>
 <div class="workspace"><span class="status-dot"></span><div><b>Personal account</b><small>Private workspace</small></div></div>
 <nav>{nav_html}</nav><div class="side-bottom"><div class="secure"> <span>●</span> Session protected</div><a class="nav-item" href="/logout">Chiqish</a></div>
-</aside><main class="main"><header class="topbar"><div><span class="eyebrow">TELEGRAM AUTOMATION</span><h1>{title}</h1></div><div class="top-right"><span class="pill"><i></i> Local panel</span><span class="avatar">CD</span></div></header>
+</aside><main class="main"><header class="topbar"><div><span class="eyebrow">TELEGRAM AUTOMATION</span><h1>{title}</h1></div><div class="top-right"><span class="pill"><i></i> Panel faol</span><span class="avatar">CD</span><a class="btn logout-btn" href="/logout" title="Tizimdan chiqish">↪ Chiqish</a></div></header>
 {content}<footer>Client Desk <span>·</span> Xabar yuborishdan oldin qabul qiluvchilarni tekshiring.</footer></main></div>
 <script src="/static/app.js"></script></body></html>"""
 
@@ -268,6 +268,11 @@ def telegram_error_message(exc):
         "SessionPasswordNeededError": "Telegram ikki bosqichli parolni talab qilmoqda.",
         "AuthRestartError": "Telegram tasdiqlash jarayonini qayta boshlashni so‘radi. Yangi kod yuboring.",
     }
+    text = str(exc).lower()
+    if "key is not registered in the system" in text or "auth_key_unregistered" in text:
+        return "Telegram sessiyasi eskirgan yoki bekor qilingan. «Telegram ulash» sahifasida sessiyani zaxiralab yangilang, keyin telefon raqamingiz bilan qayta ulaning."
+    if "database is locked" in text:
+        return "Telegram sessiya fayli boshqa jarayon tomonidan band. Biroz kutib qayta urinib ko‘ring."
     return known.get(name, f"Telegram so‘rovi bajarilmadi ({name}). Birozdan keyin qayta urinib ko‘ring.")
 
 
@@ -397,15 +402,16 @@ async def telegram_reset_session(request: Request):
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
+async def login_page(request: Request, error: str = ""):
     if logged_in(request):
         return RedirectResponse("/", status_code=303)
-    return HTMLResponse("""<!doctype html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Client Desk · Kirish</title><link rel="stylesheet" href="/static/style.css"></head><body class="login-body"><div class="login-card"><div class="brand-mark big">T</div><span class="eyebrow">PRIVATE WORKSPACE</span><h1>Panelga kirish</h1><p>Telegram klientlar paneliga kirish uchun admin parolini kiriting.</p><form method="post" action="/login"><label>Admin paroli</label><input type="password" name="password" required autofocus placeholder="Parol"><button class="btn primary full">Xavfsiz kirish <span>→</span></button></form><small class="muted">Bu parol Telegram parolingizdan alohida.</small></div></body></html>""")
+    error_html = '<div class="login-error" role="alert">Parol noto‘g‘ri. Qayta tekshirib ko‘ring.</div>' if error == "1" else ""
+    return HTMLResponse(f"""<!doctype html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b0d14"><title>Client Desk · Kirish</title><link rel="stylesheet" href="/static/style.css"></head><body class="login-body"><main class="login-card login-pro"><div class="login-brand"><div class="brand-mark big">T</div><span class="eyebrow">PRIVATE WORKSPACE</span></div><div class="login-illustration" aria-hidden="true"><span>✦</span><i></i><b></b></div><h1>Xush kelibsiz</h1><p>Client Desk boshqaruv paneliga kirish uchun parolingizni kiriting.</p>{error_html}<form method="post" action="/login"><label for="admin-password">Admin paroli</label><input id="admin-password" type="password" name="password" required autofocus autocomplete="current-password" placeholder="Parolingiz"><button class="btn primary full login-submit" type="submit">Ilovaga kirish <span aria-hidden="true">→</span></button></form><div class="login-security"><span>◈</span><div><b>Xavfsiz kirish</b><small>Bu parol Telegram parolingizdan alohida.</small></div></div></main></body></html>""")
 
 @app.post("/login")
 async def login(request: Request, password: str = Form(...)):
     if not ADMIN_PASSWORD or not secrets.compare_digest(password, ADMIN_PASSWORD):
-        return HTMLResponse("Parol noto‘g‘ri yoki PANEL_PASSWORD sozlanmagan. Server sozlamalarini tekshiring.", status_code=401)
+        return RedirectResponse("/login?error=1", status_code=303)
     request.session.clear()
     request.session["authenticated"] = True
     return RedirectResponse("/", status_code=303)
@@ -595,7 +601,7 @@ async def api_posts(request: Request):
             return result
         return tg_call(load())
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": telegram_error_message(e)}, status_code=500)
 
 @app.post("/api/send")
 async def api_send(request: Request):
