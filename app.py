@@ -668,4 +668,4 @@ async def history_page(request: Request):
     if not trs: trs = '<tr><td colspan="5" class="empty">Hali tarix yo‘q.</td></tr>'
     content = f"""<div class="stats-grid compact"><article class="stat-card"><div class="stat-head">Jami qaydlar</div><strong>{total}</strong></article><article class="stat-card"><div class="stat-head">Muvaffaqiyatli</div><strong>{sent}</strong></article><article class="stat-card"><div class="stat-head">Xatolar</div><strong>{failed}</strong></article></div>
 <div class="section-head"><div><span class="eyebrow">AUDIT LOG</span><h2>Yuborish tarixi</h2></div></div><div class="panel table-wrap"><table><thead><tr><th>Klient / sana</th><th>Post ID</th><th>Turi</th><th>Holat</th><th>Izoh</th></tr></thead><tbody>{trs}</tbody></table></div>"""
-    return HTMLResponse(html_page("Yuborish tarixi", content, "history"))
+     return HTMLResponse(html_page("Yuborish tarixi", content, "history"))
