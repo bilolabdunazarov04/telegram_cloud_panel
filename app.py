@@ -499,8 +499,14 @@ async def recipients_page(request: Request, view: str = "all"):
                 <h2>{'Tanlangan klientlar' if view == 'selected' else 'Barcha klientlar'}</h2>
                 <p>Kerakli klientlarni belgilang va saqlang.</p>
             </div>
-            <input id="recipient-search" class="search"
-                   placeholder="Ism bo‘yicha qidirish…">
+            <div class="recipient-tools">
+    <input id="recipient-search" class="search"
+           placeholder="Ism bo‘yicha qidirish…">
+    <label class="select-all-control">
+        <input id="select-all-recipients" type="checkbox">
+        <span>Hammasini tanlash</span>
+    </label>
+</div>
         </div>
 
         <div class="recipient-list">{items}</div>

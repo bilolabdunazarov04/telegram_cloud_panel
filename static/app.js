@@ -130,3 +130,33 @@ if (confirmButton) confirmButton.addEventListener("click", async () => {
     confirmButton.disabled = !consent.checked;
   }
 });
+
+
+document.addEventListener("change", function (event) {
+  if (event.target.id !== "select-all-recipients") return;
+
+  const checked = event.target.checked;
+
+  document
+    .querySelectorAll(".recipient-row input[type='checkbox']")
+    .forEach(function (checkbox) {
+      checkbox.checked = checked;
+    });
+});
+
+document.addEventListener("change", function (event) {
+  if (!event.target.matches(".recipient-row input[type='checkbox']")) return;
+
+  const boxes = Array.from(
+    document.querySelectorAll(".recipient-row input[type='checkbox']")
+  );
+
+  const master = document.querySelector("#select-all-recipients");
+  if (!master) return;
+
+  const checkedCount = boxes.filter(box => box.checked).length;
+
+  master.checked = boxes.length > 0 && checkedCount === boxes.length;
+  master.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+});
+
