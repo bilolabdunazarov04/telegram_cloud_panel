@@ -106,30 +106,72 @@ if (closeModal) closeModal.addEventListener("click", () => modal.classList.add("
 if (modal) modal.addEventListener("click", e => { if (e.target === modal) modal.classList.add("hidden"); });
 if (consent) consent.addEventListener("change", () => { confirmButton.disabled = !consent.checked; });
 
+
 if (confirmButton) confirmButton.addEventListener("click", async () => {
-  if (!consent.checked || !selected.size) return;
+  if (!consent.checked || !selected.size || confirmButton.dataset.sending === "1") {
+    return;
+  }
+
+  const postIds = [...selected];
+  confirmButton.dataset.sending = "1";
   confirmButton.disabled = true;
   confirmButton.textContent = "Yuborilmoqda…";
+
   try {
     const res = await fetch("/api/send", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({post_ids: [...selected], confirm: true, consent: true})
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        post_ids: postIds,
+        confirm: true,
+        consent: true
+      })
     });
+
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Yuborish amalga oshmadi.");
-    const ok = data.results.filter(x => x.status === "sent").length;
-    const failed = data.results.length - ok;
+
+    if (!res.ok) {
+      throw new Error(data.error || `Server xatosi: ${res.status}`);
+    }
+
+    if (!Array.isArray(data.results)) {
+      throw new Error(
+        "Server yuborish natijalarini qaytarmadi. Tarixni tekshiring."
+      );
+    }
+
+    const results = data.results;
+    const sent = results.filter(x => x.status === "sent");
+    const failed = results.filter(x => x.status === "failed");
+    const other = results.filter(
+      x => x.status !== "sent" && x.status !== "failed"
+    );
+
     modal.classList.add("hidden");
-    alert(`Yuborish tugadi.\nMuvaffaqiyatli klientlar: ${ok}\nXato bo‘lgan klientlar: ${failed}\nBatafsil ma’lumot: Yuborish tarixi.`);
+
+    alert(
+      `Yuborish jarayoni yakunlandi.\n\n` +
+      `Natija qaytgan klientlar: ${results.length}\n` +
+      `Muvaffaqiyatli deb qayd etilgan: ${sent.length}\n` +
+      `Xato deb qayd etilgan: ${failed.length}\n` +
+      `Holati noma'lum: ${other.length}\n\n` +
+      `Bu raqamlar xabarlar o'qilganini yoki albatta yetkazilganini anglatmaydi.\n` +
+      `Har bir klient natijasini Yuborish tarixi bo'limida tekshiring.`
+    );
+
     window.location.href = "/history";
   } catch (e) {
-    alert(e.message);
+    alert(
+      `Yuborish natijasi to'liq olinmadi.\n\n${e.message}\n\n` +
+      `Takror yuborishga shoshilmang: ayrim xabarlar allaqachon ketgan bo'lishi mumkin. Tarixni tekshiring.`
+    );
   } finally {
+    delete confirmButton.dataset.sending;
     confirmButton.textContent = "Yuborishni boshlash";
     confirmButton.disabled = !consent.checked;
   }
 });
+
 
 
 document.addEventListener("change", function (event) {
